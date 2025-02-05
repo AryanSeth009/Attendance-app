@@ -1,43 +1,56 @@
-import React from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import React, { useEffect } from 'react';
+import { NavigationContainer } from '@react-navigation/native';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { PaperProvider } from 'react-native-paper';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useAuthStore } from './store/authStore';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Classroom from './pages/Classroom';
-import Layout from './components/Layout';
 
-function PrivateRoute({ children }: { children: React.ReactNode }) {
-  const user = useAuthStore((state) => state.user);
-  return user ? <>{children}</> : <Navigate to="/login" />;
-}
+const Stack = createNativeStackNavigator();
 
 function App() {
+  const { user, checkAuthStatus } = useAuthStore();
+
+  useEffect(() => {
+    checkAuthStatus();
+  }, []);
+
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route
-          path="/"
-          element={
-            <PrivateRoute>
-              <Layout>
-                <Dashboard />
-              </Layout>
-            </PrivateRoute>
-          }
-        />
-        <Route
-          path="/classroom/:id"
-          element={
-            <PrivateRoute>
-              <Layout>
-                <Classroom />
-              </Layout>
-            </PrivateRoute>
-          }
-        />
-      </Routes>
-    </BrowserRouter>
+    <PaperProvider>
+      <SafeAreaProvider>
+        <NavigationContainer>
+          <Stack.Navigator>
+            {!user ? (
+              // Auth stack
+              <Stack.Screen 
+                name="Login" 
+                component={Login}
+                options={{ headerShown: false }}
+              />
+            ) : (
+              // App stack
+              <>
+                <Stack.Screen 
+                  name="Dashboard" 
+                  component={Dashboard}
+                  options={{ 
+                    title: 'Dashboard',
+                    headerBackVisible: false 
+                  }}
+                />
+                <Stack.Screen 
+                  name="Classroom" 
+                  component={Classroom}
+                  options={{ title: 'Classroom' }}
+                />
+              </>
+            )}
+          </Stack.Navigator>
+        </NavigationContainer>
+      </SafeAreaProvider>
+    </PaperProvider>
   );
 }
 

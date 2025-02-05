@@ -1,7 +1,35 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { PlusCircle, Users } from 'lucide-react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  FlatList,
+  TouchableOpacity,
+  TextInput,
+  Alert,
+  ActivityIndicator,
+  SafeAreaView,
+  Platform,
+  KeyboardAvoidingView,
+} from 'react-native';
+import { Dialog, Portal, Button } from 'react-native-paper';
+import * as SecureStore from 'expo-secure-store';
 import { useAuthStore } from '../store/authStore';
+import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+
+// Get the development machine's IP address
+const DEV_MACHINE_IP = '192.168.0.104'; // Make sure this matches your authStore.ts
+
+const API_URL = Platform.select({
+  web: "http://localhost:3000/api",
+  android: __DEV__ 
+    ? `http://${DEV_MACHINE_IP}:3000/api`
+    : "http://your-production-api.com/api",
+  ios: __DEV__
+    ? `http://${DEV_MACHINE_IP}:3000/api`
+    : "http://your-production-api.com/api",
+  default: "http://localhost:3000/api",
+});
 
 interface Classroom {
   id: string;
@@ -10,215 +38,383 @@ interface Classroom {
   joinCode: string;
 }
 
-function Dashboard() {
-  const navigate = useNavigate();
+type RootStackParamList = {
+  Dashboard: undefined;
+  Classroom: { id: string };
+  Login: undefined;
+};
+
+type Props = NativeStackScreenProps<RootStackParamList, 'Dashboard'>;
+
+const Dashboard = ({ navigation }: Props) => {
   const { user } = useAuthStore();
   const [classrooms, setClassrooms] = useState<Classroom[]>([]);
-  const [isJoining, setIsJoining] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [joinCode, setJoinCode] = useState('');
-  const [error, setError] = useState('');
-  const [isCreating, setIsCreating] = useState(false);
+  const [isJoinModalVisible, setIsJoinModalVisible] = useState(false);
+  const [isCreateModalVisible, setIsCreateModalVisible] = useState(false);
   const [newClassroom, setNewClassroom] = useState({ name: '', description: '' });
+
+  const getToken = async () => {
+    try {
+      if (Platform.OS === 'web') {
+        return localStorage.getItem('token');
+      }
+      const token = await SecureStore.getItemAsync('token');
+      return token;
+    } catch (error) {
+      console.error('Error getting token:', error);
+      return null;
+    }
+  };
+
+  const loadClassrooms = async () => {
+    try {
+      const token = await getToken();
+      if (!token) {
+        Alert.alert('Error', 'No authentication token found');
+        return;
+      }
+
+      const response = await fetch(`${API_URL}/classrooms`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to load classrooms');
+      }
+
+      const data = await response.json();
+      setClassrooms(data);
+    } catch (error) {
+      console.error('Load classrooms error:', error);
+      Alert.alert('Error', 'Failed to load classrooms');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCreateClassroom = async () => {
+    try {
+      // 1. Check user role
+      console.log('Current user:', { id: user?.id, role: user?.role });
+      if (!user || user.role !== 'admin') {
+        console.log('User role check failed:', user?.role);
+        Alert.alert('Error', 'Only administrators can create classrooms');
+        return;
+      }
+
+      // 2. Validate input
+      if (!newClassroom.name.trim()) {
+        console.log('Empty classroom name');
+        Alert.alert('Error', 'Please enter a classroom name');
+        return;
+      }
+
+      // 3. Get token
+      const token = await getToken();
+      console.log('Token retrieved:', token ? 'Token exists' : 'No token');
+      
+      if (!token) {
+        console.log('No token found');
+        Alert.alert('Error', 'Authentication token not found. Please login again.');
+        return;
+      }
+
+      // 4. Prepare request
+      const requestData = {
+        name: newClassroom.name.trim(),
+        description: newClassroom.description.trim()
+      };
+      const url = `${API_URL}/classrooms`;
+      console.log('Making request to:', url);
+      console.log('Request data:', requestData);
+
+      // 5. Make API call
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(requestData)
+      });
+
+      console.log('Response status:', response.status);
+      
+      let data;
+      const responseText = await response.text();
+      try {
+        data = JSON.parse(responseText);
+        console.log('Server response:', data);
+      } catch (e) {
+        console.error('Failed to parse response:', responseText);
+        throw new Error('Invalid server response');
+      }
+
+      if (!response.ok) {
+        throw new Error(data.message || 'Failed to create classroom');
+      }
+
+      // 6. Handle success
+      setIsCreateModalVisible(false);
+      setNewClassroom({ name: '', description: '' });
+      await loadClassrooms();
+      Alert.alert('Success', 'Classroom created successfully');
+    } catch (error) {
+      console.error('Create classroom error:', error);
+      Alert.alert(
+        'Error',
+        error instanceof Error ? error.message : 'Failed to create classroom. Please try again.'
+      );
+    }
+  };
+
+  const handleCreatePress = () => {
+    console.log('Create button pressed');
+    handleCreateClassroom().catch(error => {
+      console.error('Unhandled create classroom error:', error);
+      Alert.alert('Error', 'An unexpected error occurred. Please try again.');
+    });
+  };
+
+  const handleJoinClassroom = async () => {
+    if (!joinCode.trim()) {
+      Alert.alert('Error', 'Please enter a join code');
+      return;
+    }
+
+    try {
+      const token = await getToken();
+      const response = await fetch(`${API_URL}/classrooms/join`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ joinCode })
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.message || 'Failed to join classroom');
+      }
+      
+      setIsJoinModalVisible(false);
+      setJoinCode('');
+      loadClassrooms();
+      Alert.alert('Success', 'Successfully joined the classroom');
+    } catch (error) {
+      console.error('Join classroom error:', error);
+      Alert.alert('Error', error instanceof Error ? error.message : 'Failed to join classroom');
+    }
+  };
 
   useEffect(() => {
     loadClassrooms();
   }, []);
 
-  async function loadClassrooms() {
-    try {
-      const response = await fetch('http://localhost:3000/api/classrooms', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
-        }
-      });
-      if (!response.ok) throw new Error('Failed to load classrooms');
-      const data = await response.json();
-      setClassrooms(data);
-    } catch (error) {
-      console.error('Error loading classrooms:', error);
-    }
+  const renderClassroomItem = ({ item }: { item: Classroom }) => (
+    <TouchableOpacity
+      style={styles.classroomCard}
+      onPress={() => navigation.navigate('Classroom', { id: item.id })}
+    >
+      <Text style={styles.classroomName}>{item.name}</Text>
+      {item.description ? (
+        <Text style={styles.classroomDescription}>{item.description}</Text>
+      ) : null}
+      {user?.role === 'admin' ? (
+        <Text style={styles.joinCode}>Join Code: {item.joinCode}</Text>
+      ) : null}
+    </TouchableOpacity>
+  );
+
+  if (isLoading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#6366f1" />
+      </View>
+    );
   }
 
-  const handleJoinClassroom = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-
-    if (!joinCode.trim()) {
-      setError('Please enter a join code');
-      return;
-    }
-
-    try {
-      const response = await fetch('http://localhost:3000/api/classrooms/join', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ joinCode })
-      });
-
-      if (!response.ok) throw new Error('Invalid join code');
-
-      await loadClassrooms();
-      setJoinCode('');
-      setIsJoining(false);
-    } catch (error) {
-      setError('Failed to join classroom');
-    }
-  };
-
-  const handleCreateClassroom = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-
-    if (!newClassroom.name.trim()) {
-      setError('Please enter a classroom name');
-      return;
-    }
-
-    try {
-      const response = await fetch('http://localhost:3000/api/classrooms', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(newClassroom)
-      });
-
-      if (!response.ok) throw new Error('Failed to create classroom');
-
-      await loadClassrooms();
-      setNewClassroom({ name: '', description: '' });
-      setIsCreating(false);
-    } catch (error) {
-      setError('Failed to create classroom');
-    }
-  };
-
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-2xl font-bold text-gray-900">My Classrooms</h1>
-        <div className="flex space-x-4">
-          {user?.role === 'student' && (
-            <button
-              onClick={() => setIsJoining(!isJoining)}
-              className="inline-flex items-center px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-            >
-              <Users className="h-4 w-4 mr-2" />
-              Join Classroom
-            </button>
-          )}
-          {user?.role === 'admin' && (
-            <button
-              onClick={() => setIsCreating(!isCreating)}
-              className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-            >
-              <PlusCircle className="h-4 w-4 mr-2" />
-              Create Classroom
-            </button>
-          )}
-        </div>
-      </div>
-
-      {isJoining && (
-        <form onSubmit={handleJoinClassroom} className="bg-white p-6 rounded-lg shadow-sm">
-          <div className="flex space-x-4">
-            <div className="flex-grow">
-              <label htmlFor="joinCode" className="sr-only">
-                Class Code
-              </label>
-              <input
-                type="text"
-                id="joinCode"
-                value={joinCode}
-                onChange={(e) => setJoinCode(e.target.value)}
-                placeholder="Enter class code"
-                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
-              />
-            </div>
-            <button
-              type="submit"
-              className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-            >
-              Join
-            </button>
-          </div>
-          {error && (
-            <p className="mt-2 text-sm text-red-600">{error}</p>
-          )}
-        </form>
-      )}
-
-      {isCreating && (
-        <form onSubmit={handleCreateClassroom} className="bg-white p-6 rounded-lg shadow-sm">
-          <div className="space-y-4">
-            <div>
-              <label htmlFor="className" className="block text-sm font-medium text-gray-700">
-                Class Name
-              </label>
-              <input
-                type="text"
-                id="className"
-                value={newClassroom.name}
-                onChange={(e) => setNewClassroom(prev => ({ ...prev, name: e.target.value }))}
-                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
-              />
-            </div>
-            <div>
-              <label htmlFor="description" className="block text-sm font-medium text-gray-700">
-                Description
-              </label>
-              <textarea
-                id="description"
-                value={newClassroom.description}
-                onChange={(e) => setNewClassroom(prev => ({ ...prev, description: e.target.value }))}
-                rows={3}
-                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
-              />
-            </div>
-            <div className="flex justify-end">
-              <button
-                type="submit"
-                className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-              >
-                Create Classroom
-              </button>
-            </div>
-          </div>
-          {error && (
-            <p className="mt-2 text-sm text-red-600">{error}</p>
-          )}
-        </form>
-      )}
-
-      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
-        {classrooms.map((classroom) => (
-          <div
-            key={classroom.id}
-            onClick={() => navigate(`/classroom/${classroom.id}`)}
-            className="bg-white overflow-hidden shadow rounded-lg cursor-pointer hover:shadow-md transition-shadow"
+    <SafeAreaView style={styles.container}>
+      <View style={styles.header}>
+        <Text style={styles.title}>Classrooms</Text>
+        <View style={styles.buttonContainer}>
+          <TouchableOpacity
+            style={styles.button}
+            onPress={() => setIsJoinModalVisible(true)}
           >
-            <div className="px-4 py-5 sm:p-6">
-              <h3 className="text-lg font-medium text-gray-900 truncate">
-                {classroom.name}
-              </h3>
-              <p className="mt-1 text-sm text-gray-500 line-clamp-2">
-                {classroom.description}
-              </p>
-            </div>
-            <div className="bg-gray-50 px-4 py-4 sm:px-6">
-              <div className="text-sm text-gray-500">
-                Code: {classroom.joinCode}
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
+            <Text style={styles.buttonText}>Join</Text>
+          </TouchableOpacity>
+          {user?.role === 'admin' ? (
+            <TouchableOpacity
+              style={styles.button}
+              onPress={() => setIsCreateModalVisible(true)}
+            >
+              <Text style={styles.buttonText}>Create</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      </View>
+
+      <FlatList
+        data={classrooms}
+        renderItem={renderClassroomItem}
+        keyExtractor={(item) => item.id}
+        contentContainerStyle={styles.listContainer}
+      />
+
+      <Portal>
+        <Dialog
+          visible={isCreateModalVisible}
+          onDismiss={() => {
+            setIsCreateModalVisible(false);
+            setNewClassroom({ name: '', description: '' });
+          }}
+        >
+          <Dialog.Title>Create Classroom</Dialog.Title>
+          <Dialog.Content>
+            <TextInput
+              style={styles.input}
+              placeholder="Classroom name"
+              value={newClassroom.name}
+              onChangeText={(text) => setNewClassroom(prev => ({ ...prev, name: text }))}
+            />
+            <TextInput
+              style={[styles.input, styles.textArea]}
+              placeholder="Description (optional)"
+              value={newClassroom.description}
+              onChangeText={(text) => setNewClassroom(prev => ({ ...prev, description: text }))}
+              multiline
+              numberOfLines={3}
+            />
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button 
+              onPress={() => {
+                setIsCreateModalVisible(false);
+                setNewClassroom({ name: '', description: '' });
+              }}
+            >
+              Cancel
+            </Button>
+            <Button onPress={handleCreatePress}>
+              Create
+            </Button>
+          </Dialog.Actions>
+        </Dialog>
+
+        <Dialog
+          visible={isJoinModalVisible}
+          onDismiss={() => {
+            setIsJoinModalVisible(false);
+            setJoinCode('');
+          }}
+        >
+          <Dialog.Title>Join Classroom</Dialog.Title>
+          <Dialog.Content>
+            <TextInput
+              style={styles.input}
+              placeholder="Enter join code"
+              value={joinCode}
+              onChangeText={setJoinCode}
+            />
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button 
+              onPress={() => {
+                setIsJoinModalVisible(false);
+                setJoinCode('');
+              }}
+            >
+              Cancel
+            </Button>
+            <Button onPress={handleJoinClassroom}>Join</Button>
+          </Dialog.Actions>
+        </Dialog>
+      </Portal>
+    </SafeAreaView>
   );
-}
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#f5f5f5',
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  header: {
+    padding: 16,
+    backgroundColor: '#fff',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e5e5e5',
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: 'bold',
+  },
+  buttonContainer: {
+    flexDirection: 'row',
+  },
+  button: {
+    backgroundColor: '#6366f1',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 4,
+    marginLeft: 8,
+  },
+  buttonText: {
+    color: '#fff',
+    fontWeight: '600',
+  },
+  listContainer: {
+    padding: 16,
+  },
+  classroomCard: {
+    backgroundColor: '#fff',
+    padding: 16,
+    borderRadius: 8,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#e5e5e5',
+  },
+  classroomName: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 4,
+  },
+  classroomDescription: {
+    color: '#666',
+    marginBottom: 8,
+  },
+  joinCode: {
+    color: '#6366f1',
+    fontWeight: '500',
+  },
+  input: {
+    backgroundColor: '#f9fafb',
+    borderWidth: 1,
+    borderColor: '#e5e5e5',
+    borderRadius: 4,
+    padding: 12,
+    marginBottom: 12,
+  },
+  textArea: {
+    height: 80,
+    textAlignVertical: 'top',
+  },
+});
 
 export default Dashboard;
