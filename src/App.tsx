@@ -4,11 +4,17 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { PaperProvider } from 'react-native-paper';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useAuthStore } from './store/authStore';
-import Login from './pages/Login';
-import Dashboard from './pages/Dashboard';
-import Classroom from './pages/Classroom';
+import Login from './components/Login';
+import DashboardScreen from './screens/DashboardScreen';
+import ClassroomScreen from './screens/ClassroomScreen';
 
-const Stack = createNativeStackNavigator();
+type RootStackParamList = {
+  Dashboard: undefined;
+  Classroom: { id: string };
+  Login: undefined;
+};
+
+const Stack = createNativeStackNavigator<RootStackParamList>();
 
 function App() {
   const { user, checkAuthStatus } = useAuthStore();
@@ -23,18 +29,16 @@ function App() {
         <NavigationContainer>
           <Stack.Navigator>
             {!user ? (
-              // Auth stack
               <Stack.Screen 
                 name="Login" 
                 component={Login}
                 options={{ headerShown: false }}
               />
             ) : (
-              // App stack
               <>
                 <Stack.Screen 
                   name="Dashboard" 
-                  component={Dashboard}
+                  component={DashboardScreen}
                   options={{ 
                     title: 'Dashboard',
                     headerBackVisible: false 
@@ -42,8 +46,11 @@ function App() {
                 />
                 <Stack.Screen 
                   name="Classroom" 
-                  component={Classroom}
-                  options={{ title: 'Classroom' }}
+                  component={ClassroomScreen}
+                  options={{ 
+                    title: 'Classroom',
+                    headerBackTitle: 'Back'
+                  }}
                 />
               </>
             )}

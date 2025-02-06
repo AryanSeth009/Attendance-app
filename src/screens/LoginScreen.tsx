@@ -1,152 +1,215 @@
-import React, { useState } from 'react';
-import { View, StyleSheet, ScrollView } from 'react-native';
-import { TextInput, Button, Text, Surface, SegmentedButtons } from 'react-native-paper';
+import React, { useState, useEffect } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+} from 'react-native';
 import { useAuthStore } from '../store/authStore';
+import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 
-export default function LoginScreen() {
-  const { signIn, signUp, error: authError, isLoading } = useAuthStore();
-  const [isSignUp, setIsSignUp] = useState(false);
+type RootStackParamList = {
+  Login: undefined;
+  Dashboard: undefined;
+  Classroom: { id: string };
+};
+
+type Props = NativeStackScreenProps<RootStackParamList, 'Login'>;
+
+const Login = ({ navigation }: Props) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [role, setRole] = useState<'admin' | 'student'>('student');
-  const [localError, setLocalError] = useState('');
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [role, setRole] = useState<'student' | 'admin'>('student');
+  
+  const { signIn, signUp, isLoading, error, loadSavedEmail, savedEmail } = useAuthStore();
+
+  useEffect(() => {
+    loadSavedEmail();
+  }, []);
+
+  useEffect(() => {
+    if (savedEmail) {
+      setEmail(savedEmail);
+    }
+  }, [savedEmail]);
 
   const handleSubmit = async () => {
-    // Reset previous errors
-    setLocalError('');
-
-    // Validate email format
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      setLocalError('Please enter a valid email address');
-      return;
-    }
-
-    // Validate password strength
-    if (password.length < 6) {
-      setLocalError('Password must be at least 6 characters long');
-      return;
-    }
-
     try {
-      if (isSignUp) {
+      if (isRegistering) {
         await signUp(email, password, role);
       } else {
         await signIn(email, password);
       }
-    } catch (err) {
-      // Handle specific error scenarios
-      const errorMessage = err instanceof Error 
-        ? err.message 
-        : 'An unexpected error occurred';
-      
-      setLocalError(errorMessage);
+      navigation.replace('Dashboard');
+    } catch (error) {
+      Alert.alert('Error', error instanceof Error ? error.message : 'An error occurred');
     }
   };
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <Surface style={styles.surface} elevation={2}>
-        <Text variant="headlineMedium" style={styles.title}>
-          {isSignUp ? 'Create Account' : 'Sign In'}
-        </Text>
-
-        {/* Consolidated error display */}
-        {(localError || authError) && (
-          <Text style={styles.error}>
-            {localError || authError}
-          </Text>
-        )}
-
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      style={styles.container}
+    >
+      <View style={styles.form}>
+        <Text style={styles.title}>{isRegistering ? 'Register' : 'Login'}</Text>
+        
         <TextInput
-          label="Email"
+          style={styles.input}
+          placeholder="Email"
           value={email}
           onChangeText={setEmail}
-          mode="outlined"
           keyboardType="email-address"
           autoCapitalize="none"
-          style={styles.input}
-          error={!!localError}
         />
-
+        
         <TextInput
-          label="Password"
+          style={styles.input}
+          placeholder="Password"
           value={password}
           onChangeText={setPassword}
-          mode="outlined"
           secureTextEntry
-          style={styles.input}
-          error={!!localError}
         />
 
-        {isSignUp && (
-          <SegmentedButtons
-            value={role}
-            onValueChange={value => setRole(value as 'admin' | 'student')}
-            buttons={[
-              { value: 'student', label: 'Student' },
-              { value: 'admin', label: 'Admin' },
-            ]}
-            style={styles.roleSelector}
-          />
+        {isRegistering && (
+          <View style={styles.roleContainer}>
+            <Text style={styles.label}>Register as:</Text>
+            <View style={styles.roleButtons}>
+              <TouchableOpacity
+                style={[styles.roleButton, role === 'student' && styles.roleButtonActive]}
+                onPress={() => setRole('student')}
+              >
+                <Text style={[styles.roleButtonText, role === 'student' && styles.roleButtonTextActive]}>
+                  Student
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.roleButton, role === 'admin' && styles.roleButtonActive]}
+                onPress={() => setRole('admin')}
+              >
+                <Text style={[styles.roleButtonText, role === 'admin' && styles.roleButtonTextActive]}>
+                  Admin
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
         )}
 
-        <Button
-          mode="contained"
-          onPress={handleSubmit}
-          loading={isLoading}
-          disabled={isLoading}
+        <TouchableOpacity
           style={styles.button}
+          onPress={handleSubmit}
+          disabled={isLoading}
         >
-          {isSignUp ? 'Sign Up' : 'Sign In'}
-        </Button>
+          {isLoading ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.buttonText}>
+              {isRegistering ? 'Register' : 'Login'}
+            </Text>
+          )}
+        </TouchableOpacity>
 
-        <Button
-          mode="text"
-          onPress={() => {
-            setIsSignUp(!isSignUp);
-            setLocalError('');
-          }}
+        <TouchableOpacity
           style={styles.switchButton}
+          onPress={() => setIsRegistering(!isRegistering)}
         >
-          {isSignUp 
-            ? 'Already have an account? Sign in' 
-            : "Don't have an account? Sign up"}
-        </Button>
-      </Surface>
-    </ScrollView>
+          <Text style={styles.switchButtonText}>
+            {isRegistering
+              ? 'Already have an account? Login'
+              : "Don't have an account? Register"}
+          </Text>
+        </TouchableOpacity>
+
+        {error && <Text style={styles.error}>{error}</Text>}
+      </View>
+    </KeyboardAvoidingView>
   );
-}
+};
 
 const styles = StyleSheet.create({
   container: {
-    flexGrow: 1,
-    padding: 16,
-    justifyContent: 'center',
+    flex: 1,
+    backgroundColor: '#f5f5f5',
   },
-  surface: {
+  form: {
+    flex: 1,
+    justifyContent: 'center',
     padding: 20,
-    borderRadius: 10,
   },
   title: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginBottom: 20,
     textAlign: 'center',
-    marginBottom: 24,
   },
   input: {
-    marginBottom: 16,
+    backgroundColor: '#fff',
+    padding: 15,
+    borderRadius: 5,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#ddd',
   },
-  roleSelector: {
-    marginBottom: 16,
+  roleContainer: {
+    marginBottom: 15,
+  },
+  label: {
+    marginBottom: 8,
+    fontSize: 16,
+  },
+  roleButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  roleButton: {
+    flex: 1,
+    padding: 12,
+    borderRadius: 5,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    marginHorizontal: 5,
+    backgroundColor: '#fff',
+  },
+  roleButtonActive: {
+    backgroundColor: '#007AFF',
+    borderColor: '#007AFF',
+  },
+  roleButtonText: {
+    textAlign: 'center',
+    color: '#333',
+  },
+  roleButtonTextActive: {
+    color: '#fff',
   },
   button: {
-    marginTop: 8,
+    backgroundColor: '#007AFF',
+    padding: 15,
+    borderRadius: 5,
+    marginTop: 10,
+  },
+  buttonText: {
+    color: '#fff',
+    textAlign: 'center',
+    fontWeight: 'bold',
   },
   switchButton: {
-    marginTop: 16,
+    marginTop: 15,
+  },
+  switchButtonText: {
+    color: '#007AFF',
+    textAlign: 'center',
   },
   error: {
     color: 'red',
-    marginBottom: 16,
     textAlign: 'center',
+    marginTop: 10,
   },
 });
+
+export default Login;

@@ -35,11 +35,21 @@ mongoose.connect(process.env.MONGODB_URI, {
   useUnifiedTopology: true,
   serverSelectionTimeoutMS: 5000,
 })
-  .then(() => console.log("Connected to MongoDB"))
-  .catch((err) => {
-    console.error("MongoDB connection error:", err);
-    process.exit(1); // Exit if we can't connect to MongoDB
-  });
+.then(async () => {
+  console.log("Connected to MongoDB");
+  
+  // Drop the existing collection to apply new schema
+  // try {
+  //   await mongoose.connection.collections.users.drop();
+  //   console.log("Dropped users collection for schema update");
+  // } catch (err) {
+  //   console.log("No existing users collection to drop");
+  // }
+})
+.catch((err) => {
+  console.error("MongoDB connection error:", err);
+  process.exit(1); // Exit if we can't connect to MongoDB
+});
 
 // Handle MongoDB connection errors
 mongoose.connection.on("error", (err) => {
@@ -50,53 +60,49 @@ mongoose.connection.on("disconnected", () => {
   console.log("MongoDB disconnected");
 });
 
-// User Schema
+// MongoDB Models
 const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
   role: { type: String, enum: ["admin", "student"], required: true },
+  studentId: String,
+  enrollmentDate: Date,
 });
 
 const User = mongoose.model("User", userSchema);
 
-// Classroom Schema
 const classroomSchema = new mongoose.Schema({
   name: { type: String, required: true },
-  description: { type: String },
-  createdBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "User",
-    required: true,
-  },
+  description: String,
   joinCode: { type: String, required: true, unique: true },
-  members: [
-    {
-      user: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-      role: { type: String, enum: ["admin", "student"], required: true },
-    },
-  ],
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  members: [{
+    user: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    role: { type: String, enum: ["student", "admin"], required: true }
+  }],
   createdAt: { type: Date, default: Date.now },
 });
 
 const Classroom = mongoose.model("Classroom", classroomSchema);
 
-// Attendance Schema
-const attendanceSchema = new mongoose.Schema({
-  classroom: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "Classroom",
-    required: true,
-  },
-  student: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "User",
-    required: true,
-  },
-  status: { type: String, enum: ["present", "absent", "late"], required: true },
-  createdAt: { type: Date, default: Date.now },
+const attendanceSessionSchema = new mongoose.Schema({
+  classroom: { type: mongoose.Schema.Types.ObjectId, ref: "Classroom", required: true },
+  startTime: { type: Date, required: true },
+  endTime: { type: Date },
+  status: { type: String, enum: ["active", "ended"], default: "active" },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
 });
 
-const Attendance = mongoose.model("Attendance", attendanceSchema);
+const AttendanceSession = mongoose.model("AttendanceSession", attendanceSessionSchema);
+
+const attendanceRecordSchema = new mongoose.Schema({
+  session: { type: mongoose.Schema.Types.ObjectId, ref: "AttendanceSession", required: true },
+  student: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  status: { type: String, enum: ["present"], default: "present" },
+  markedAt: { type: Date, default: Date.now },
+});
+
+const AttendanceRecord = mongoose.model("AttendanceRecord", attendanceRecordSchema);
 
 // Middleware to verify JWT token
 const authenticateToken = (req, res, next) => {
@@ -125,7 +131,7 @@ const generateJoinCode = () => {
 app.post("/api/auth/register", async (req, res) => {
   console.log("Registration attempt received:", req.body);
   try {
-    let { email, password, role } = req.body;
+    let { email, password, role, studentId, enrollmentDate } = req.body;
 
     // Ensure email is a valid string and not null
     if (!email || typeof email !== "string" || !email.trim()) {
@@ -133,15 +139,19 @@ app.post("/api/auth/register", async (req, res) => {
       return res.status(400).json({ message: "Valid email is required" });
     }
 
-    // Trim whitespace
-    email = email.trim().toLowerCase(); // Normalize email format
+    // Trim whitespace and convert to lowercase
+    email = email.trim().toLowerCase();
+
+    // Validate email format
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      console.warn("Invalid email format");
+      return res.status(400).json({ message: "Invalid email format" });
+    }
 
     // Validate input fields
     if (!password || typeof password !== "string" || password.length < 6) {
       console.warn("Weak or missing password");
-      return res
-        .status(400)
-        .json({ message: "Password must be at least 6 characters long" });
+      return res.status(400).json({ message: "Password must be at least 6 characters long" });
     }
 
     if (!role || !["admin", "student"].includes(role)) {
@@ -159,31 +169,42 @@ app.post("/api/auth/register", async (req, res) => {
     // Hash the password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Save user to DB
-    const user = new User({ email, password: hashedPassword, role });
+    // Create new user
+    const user = new User({
+      email,
+      password: hashedPassword,
+      role,
+      ...(role === "student" && {
+        studentId: studentId || email.split("@")[0],
+        enrollmentDate: enrollmentDate || new Date()
+      })
+    });
+
     await user.save();
 
     // Generate JWT token
     const token = jwt.sign(
-      { id: user._id, role: user.role },
+      { id: user._id, email: user.email, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: "24h" }
     );
 
-    console.log(`User registered successfully: ${email}`);
     res.status(201).json({
-      user: { id: user._id, email: user.email, role: user.role },
+      message: "User registered successfully",
       token,
+      user: {
+        id: user._id,
+        email: user.email,
+        role: user.role,
+        ...(role === "student" && {
+          studentId: user.studentId,
+          enrollmentDate: user.enrollmentDate
+        })
+      }
     });
   } catch (error) {
     console.error("Registration error:", error);
-    res.status(500).json({
-      message: "Server error during registration",
-      error:
-        process.env.NODE_ENV !== "production"
-          ? error.message
-          : "Internal Server Error",
-    });
+    res.status(500).json({ message: "Registration failed", error: error.message });
   }
 });
 
@@ -374,64 +395,278 @@ app.post("/api/classrooms/join", authenticateToken, async (req, res) => {
 });
 
 // Attendance Routes
-app.post(
-  "/api/attendance/:classroomId/mark",
-  authenticateToken,
-  async (req, res) => {
-    try {
-      const { classroomId } = req.params;
-      const { status } = req.body;
+app.post("/api/attendance/:classroomId/mark", authenticateToken, async (req, res) => {
+  try {
+    const { classroomId } = req.params;
+    const { status } = req.body;
 
-      // Verify classroom membership
-      const classroom = await Classroom.findOne({
-        _id: classroomId,
-        "members.user": req.user.id,
-      });
-
-      if (!classroom) {
-        return res.status(404).json({ message: "Classroom not found" });
-      }
-
-      // Create attendance record
-      const attendance = new Attendance({
-        classroom: classroomId,
-        student: req.user.id,
-        status,
-      });
-
-      await attendance.save();
-      res.status(201).json(attendance);
-    } catch (error) {
-      console.error("Mark attendance error:", error);
-      res
-        .status(500)
-        .json({ message: "Server error while marking attendance" });
+    // Validate status
+    if (!["present", "absent", "late"].includes(status)) {
+      return res.status(400).json({ message: "Invalid attendance status" });
     }
+
+    // Check if student is enrolled in the classroom
+    const classroom = await Classroom.findById(classroomId);
+    if (!classroom) {
+      return res.status(404).json({ message: "Classroom not found" });
+    }
+
+    // Check if user is enrolled in the classroom
+    if (!classroom.members.some(member => member.user.toString() === req.user.id)) {
+      return res.status(403).json({ message: "You are not enrolled in this classroom" });
+    }
+
+    // Create attendance record
+    const attendance = new AttendanceRecord({
+      classroom: classroomId,
+      student: req.user.id,
+      status,
+    });
+
+    await attendance.save();
+
+    // Populate student info
+    await attendance.populate("student", "email");
+
+    res.json(attendance);
+  } catch (error) {
+    console.error("Error marking attendance:", error);
+    res.status(500).json({ message: "Failed to mark attendance" });
   }
-);
+});
 
 app.get("/api/attendance/:classroomId", authenticateToken, async (req, res) => {
   try {
     const { classroomId } = req.params;
 
-    // Verify classroom membership
-    const classroom = await Classroom.findOne({
-      _id: classroomId,
-      "members.user": req.user.id,
-    });
-
+    // Verify classroom exists
+    const classroom = await Classroom.findById(classroomId);
     if (!classroom) {
       return res.status(404).json({ message: "Classroom not found" });
     }
 
-    const attendance = await Attendance.find({ classroom: classroomId })
+    const attendance = await AttendanceRecord.find({ classroom: classroomId })
       .populate("student", "email")
       .sort("-createdAt");
 
     res.json(attendance);
   } catch (error) {
-    console.error("Get attendance error:", error);
-    res.status(500).json({ message: "Server error while fetching attendance" });
+    console.error("Error fetching attendance:", error);
+    res.status(500).json({ message: "Failed to fetch attendance records" });
+  }
+});
+
+// New Attendance Session Endpoints
+app.post("/api/attendance/session/start/:classroomId", authenticateToken, async (req, res) => {
+  try {
+    const { classroomId } = req.params;
+    const classroom = await Classroom.findById(classroomId);
+    
+    if (!classroom) {
+      return res.status(404).json({ message: "Classroom not found" });
+    }
+    
+    // Only admin can start attendance
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ message: "Only admin can start attendance" });
+    }
+    
+    // Check if there's already an active session
+    const activeSession = await AttendanceSession.findOne({
+      classroom: classroomId,
+      status: "active"
+    });
+    
+    if (activeSession) {
+      return res.status(400).json({ message: "An attendance session is already active" });
+    }
+    
+    const session = new AttendanceSession({
+      classroom: classroomId,
+      startTime: new Date(),
+      createdBy: req.user.id
+    });
+    
+    await session.save();
+    res.json(session);
+  } catch (error) {
+    console.error("Error starting attendance:", error);
+    res.status(500).json({ message: "Failed to start attendance session" });
+  }
+});
+
+app.post("/api/attendance/session/:sessionId/end", authenticateToken, async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const session = await AttendanceSession.findById(sessionId);
+    
+    if (!session) {
+      return res.status(404).json({ message: "Session not found" });
+    }
+    
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ message: "Only admin can end attendance" });
+    }
+    
+    if (session.status === "ended") {
+      return res.status(400).json({ message: "Session already ended" });
+    }
+    
+    session.status = "ended";
+    session.endTime = new Date();
+    await session.save();
+    
+    res.json(session);
+  } catch (error) {
+    console.error("Error ending attendance:", error);
+    res.status(500).json({ message: "Failed to end attendance session" });
+  }
+});
+
+app.post("/api/attendance/session/:sessionId/mark", authenticateToken, async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const session = await AttendanceSession.findById(sessionId);
+    
+    if (!session) {
+      return res.status(404).json({ message: "Session not found" });
+    }
+    
+    if (session.status !== "active") {
+      return res.status(400).json({ message: "Attendance session is not active" });
+    }
+    
+    if (req.user.role !== "student") {
+      return res.status(403).json({ message: "Only students can mark attendance" });
+    }
+    
+    // Check if student is enrolled in the classroom
+    const classroom = await Classroom.findById(session.classroom);
+    if (!classroom.members.some(member => member.user.toString() === req.user.id)) {
+      return res.status(403).json({ message: "You are not enrolled in this classroom" });
+    }
+    
+    // Check if already marked
+    const existingRecord = await AttendanceRecord.findOne({
+      session: sessionId,
+      student: req.user.id
+    });
+    
+    if (existingRecord) {
+      return res.status(400).json({ message: "Attendance already marked" });
+    }
+    
+    const record = new AttendanceRecord({
+      session: sessionId,
+      student: req.user.id,
+      status: "present"
+    });
+    
+    await record.save();
+    await record.populate("student", "email studentId");
+    res.json(record);
+  } catch (error) {
+    console.error("Error marking attendance:", error);
+    res.status(500).json({ message: "Failed to mark attendance" });
+  }
+});
+
+app.get("/api/attendance/session/active/:classroomId", authenticateToken, async (req, res) => {
+  try {
+    const { classroomId } = req.params;
+    
+    const session = await AttendanceSession.findOne({
+      classroom: classroomId,
+      status: "active"
+    }).populate("createdBy", "email");
+    
+    if (!session) {
+      return res.json(null);
+    }
+    
+    const records = await AttendanceRecord.find({ session: session._id })
+      .populate("student", "email studentId");
+    
+    res.json({
+      ...session.toObject(),
+      records
+    });
+  } catch (error) {
+    console.error("Error fetching active session:", error);
+    res.status(500).json({ message: "Failed to fetch active session" });
+  }
+});
+
+app.get("/api/attendance/session/records/:classroomId", authenticateToken, async (req, res) => {
+  try {
+    const { classroomId } = req.params;
+    const { date } = req.query;
+    
+    const classroom = await Classroom.findById(classroomId);
+    if (!classroom) {
+      return res.status(404).json({ message: "Classroom not found" });
+    }
+    
+    // Only admin or enrolled students can view records
+    if (req.user.role !== "admin" && !classroom.members.some(member => member.user.toString() === req.user.id)) {
+      return res.status(403).json({ message: "Not authorized to view attendance records" });
+    }
+    
+    let query = { classroom: classroomId };
+    
+    // Filter by date if provided
+    if (date) {
+      const startDate = new Date(date);
+      const endDate = new Date(date);
+      endDate.setDate(endDate.getDate() + 1);
+      
+      query.startTime = {
+        $gte: startDate,
+        $lt: endDate
+      };
+    }
+    
+    const sessions = await AttendanceSession.find(query)
+      .sort({ startTime: -1 })
+      .populate("createdBy", "email");
+      
+    // Get records for each session
+    const sessionsWithRecords = await Promise.all(sessions.map(async (session) => {
+      const records = await AttendanceRecord.find({ session: session._id })
+        .populate("student", "email studentId");
+      
+      return {
+        ...session.toObject(),
+        records
+      };
+    }));
+    
+    res.json(sessionsWithRecords);
+  } catch (error) {
+    console.error("Error fetching attendance records:", error);
+    res.status(500).json({ message: "Failed to fetch attendance records" });
+  }
+});
+
+app.get("/api/attendance/session/:sessionId", authenticateToken, async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const session = await AttendanceSession.findById(sessionId).populate("createdBy", "email");
+    
+    if (!session) {
+      return res.status(404).json({ message: "Session not found" });
+    }
+    
+    const records = await AttendanceRecord.find({ session: sessionId })
+      .populate("student", "email studentId");
+    
+    res.json({
+      ...session.toObject(),
+      records
+    });
+  } catch (error) {
+    console.error("Error fetching session:", error);
+    res.status(500).json({ message: "Failed to fetch session" });
   }
 });
 
